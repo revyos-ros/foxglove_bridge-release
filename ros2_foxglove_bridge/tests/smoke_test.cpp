@@ -4,24 +4,45 @@
 #include <thread>
 
 #include <gtest/gtest.h>
-#include <rclcpp_components/component_manager.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/set_bool.hpp>
 #include <websocketpp/config/asio_client.hpp>
 
+#include <foxglove_bridge/ros2_foxglove_bridge.hpp>
 #include <foxglove_bridge/test/test_client.hpp>
 #include <foxglove_bridge/websocket_client.hpp>
 
 constexpr char URI[] = "ws://localhost:8765";
 
 // Binary representation of std_msgs/msg/String for "hello world"
-constexpr uint8_t HELLO_WORLD_BINARY[] = {0,   1,   0,   0,  12,  0,   0,   0,   104, 101,
-                                          108, 108, 111, 32, 119, 111, 114, 108, 100, 0};
+constexpr uint8_t HELLO_WORLD_CDR[] = {0,   1,   0,   0,  12,  0,   0,   0,   104, 101,
+                                       108, 108, 111, 32, 119, 111, 114, 108, 100, 0};
+constexpr char HELLO_WORLD_JSON[] = "{\"data\": \"hello world\"}";
+constexpr char STD_MSGS_STRING_SCHEMA[] = "data string";
 
 constexpr auto ONE_SECOND = std::chrono::seconds(1);
 constexpr auto DEFAULT_TIMEOUT = std::chrono::seconds(10);
 
-class ParameterTest : public ::testing::Test {
+class TestWithExecutor : public testing::Test {
+protected:
+  TestWithExecutor() {
+    this->_executorThread = std::thread([this]() {
+      this->executor.spin();
+    });
+  }
+
+  ~TestWithExecutor() override {
+    this->executor.cancel();
+    this->_executorThread.join();
+  }
+
+  rclcpp::executors::SingleThreadedExecutor executor;
+
+private:
+  std::thread _executorThread;
+};
+
+class ParameterTest : public TestWithExecutor {
 public:
   using PARAM_1_TYPE = std::string;
   inline static const std::string NODE_1_NAME = "node_1";
@@ -63,29 +84,24 @@ protected:
     _paramNode2->declare_parameter(PARAM_3_NAME, PARAM_3_DEFAULT_VALUE);
     _paramNode2->declare_parameter(PARAM_4_NAME, PARAM_4_DEFAULT_VALUE);
 
-    _executor.add_node(_paramNode1);
-    _executor.add_node(_paramNode2);
-    _executorThread = std::thread([this]() {
-      _executor.spin();
-    });
+    executor.add_node(_paramNode1);
+    executor.add_node(_paramNode2);
 
     _wsClient = std::make_shared<foxglove::Client<websocketpp::config::asio_client>>();
     ASSERT_EQ(std::future_status::ready, _wsClient->connect(URI).wait_for(DEFAULT_TIMEOUT));
   }
 
   void TearDown() override {
-    _executor.cancel();
-    _executorThread.join();
+    executor.remove_node(_paramNode1);
+    executor.remove_node(_paramNode2);
   }
 
-  rclcpp::executors::SingleThreadedExecutor _executor;
   rclcpp::Node::SharedPtr _paramNode1;
   rclcpp::Node::SharedPtr _paramNode2;
-  std::thread _executorThread;
   std::shared_ptr<foxglove::Client<websocketpp::config::asio_client>> _wsClient;
 };
 
-class ServiceTest : public ::testing::Test {
+class ServiceTest : public TestWithExecutor {
 public:
   inline static const std::string SERVICE_NAME = "/foo_service";
 
@@ -98,26 +114,23 @@ protected:
         res->message = "hello";
         res->success = req->data;
       });
-
-    _executor.add_node(_node);
-    _executorThread = std::thread([this]() {
-      _executor.spin();
-    });
+    executor.add_node(_node);
   }
 
   void TearDown() override {
-    _executor.cancel();
-    _executorThread.join();
+    executor.remove_node(_node);
   }
 
-  rclcpp::executors::SingleThreadedExecutor _executor;
   rclcpp::Node::SharedPtr _node;
   rclcpp::ServiceBase::SharedPtr _service;
-  std::thread _executorThread;
   std::shared_ptr<foxglove::Client<websocketpp::config::asio_client>> _wsClient;
 };
 
-class ExistingPublisherTest : public ::testing::Test {
+class PublisherTest
+    : public TestWithExecutor,
+      public testing::WithParamInterface<std::pair<std::string, std::vector<uint8_t>>> {};
+
+class ExistingPublisherTest : public PublisherTest {
 public:
   inline static const std::string TOPIC_NAME = "/some_topic";
 
@@ -126,21 +139,15 @@ protected:
     _node = rclcpp::Node::make_shared("node");
     _publisher =
       _node->create_publisher<std_msgs::msg::String>(TOPIC_NAME, rclcpp::SystemDefaultsQoS());
-    _executor.add_node(_node);
-    _executorThread = std::thread([this]() {
-      _executor.spin();
-    });
+    executor.add_node(_node);
   }
 
   void TearDown() override {
-    _executor.cancel();
-    _executorThread.join();
+    executor.remove_node(_node);
   }
 
-  rclcpp::executors::SingleThreadedExecutor _executor;
   rclcpp::Node::SharedPtr _node;
   rclcpp::PublisherBase::SharedPtr _publisher;
-  std::thread _executorThread;
 };
 
 template <class T>
@@ -197,8 +204,8 @@ TEST(SmokeTest, testSubscription) {
     client->subscribe({{subscriptionId, channel.id}});
     ASSERT_EQ(std::future_status::ready, msgFuture.wait_for(ONE_SECOND));
     const auto msgData = msgFuture.get();
-    ASSERT_EQ(sizeof(HELLO_WORLD_BINARY), msgData.size());
-    EXPECT_EQ(0, std::memcmp(HELLO_WORLD_BINARY, msgData.data(), msgData.size()));
+    ASSERT_EQ(sizeof(HELLO_WORLD_CDR), msgData.size());
+    EXPECT_EQ(0, std::memcmp(HELLO_WORLD_CDR, msgData.data(), msgData.size()));
 
     // Unsubscribe from the channel again.
     client->unsubscribe({subscriptionId});
@@ -242,8 +249,8 @@ TEST(SmokeTest, testSubscriptionParallel) {
   for (auto& future : futures) {
     ASSERT_EQ(std::future_status::ready, future.wait_for(DEFAULT_TIMEOUT));
     auto msgData = future.get();
-    ASSERT_EQ(sizeof(HELLO_WORLD_BINARY), msgData.size());
-    EXPECT_EQ(0, std::memcmp(HELLO_WORLD_BINARY, msgData.data(), msgData.size()));
+    ASSERT_EQ(sizeof(HELLO_WORLD_CDR), msgData.size());
+    EXPECT_EQ(0, std::memcmp(HELLO_WORLD_CDR, msgData.data(), msgData.size()));
   }
 
   for (auto client : clients) {
@@ -251,12 +258,16 @@ TEST(SmokeTest, testSubscriptionParallel) {
   }
 }
 
-TEST(SmokeTest, testPublishing) {
+TEST_P(PublisherTest, testPublishing) {
+  const auto& [encoding, message] = GetParam();
+
   foxglove::ClientAdvertisement advertisement;
   advertisement.channelId = 1;
   advertisement.topic = "/foo";
-  advertisement.encoding = "cdr";
-  advertisement.schemaName = "std_msgs/String";
+  advertisement.encoding = encoding;
+  advertisement.schemaName = "std_msgs/msg/String";
+  advertisement.schema =
+    std::vector<uint8_t>(STD_MSGS_STRING_SCHEMA, std::end(STD_MSGS_STRING_SCHEMA));
 
   // Set up a ROS node with a subscriber
   std::promise<std::string> msgPromise;
@@ -266,8 +277,7 @@ TEST(SmokeTest, testPublishing) {
     advertisement.topic, 10, [&msgPromise](std::shared_ptr<const std_msgs::msg::String> msg) {
       msgPromise.set_value(msg->data);
     });
-  rclcpp::executors::SingleThreadedExecutor executor;
-  executor.add_node(node);
+  this->executor.add_node(node);
 
   // Set up the client, advertise and publish the binary message
   auto client = std::make_shared<foxglove::Client<websocketpp::config::asio_client>>();
@@ -279,21 +289,34 @@ TEST(SmokeTest, testPublishing) {
   ASSERT_EQ(std::future_status::ready, channelFuture.wait_for(ONE_SECOND));
 
   // Publish the message and unadvertise again
-  client->publish(advertisement.channelId, HELLO_WORLD_BINARY, sizeof(HELLO_WORLD_BINARY));
+  client->publish(advertisement.channelId, message.data(), message.size());
   client->unadvertise({advertisement.channelId});
 
   // Ensure that we have received the correct message via our ROS subscriber
-  const auto ret = executor.spin_until_future_complete(msgFuture, ONE_SECOND);
-  ASSERT_EQ(rclcpp::FutureReturnCode::SUCCESS, ret);
+  ASSERT_EQ(std::future_status::ready, msgFuture.wait_for(DEFAULT_TIMEOUT));
+  this->executor.remove_node(node);
   EXPECT_EQ("hello world", msgFuture.get());
 }
 
-TEST_F(ExistingPublisherTest, testPublishingWithExistingPublisher) {
+INSTANTIATE_TEST_SUITE_P(
+  TestPublishingCDR, PublisherTest,
+  testing::Values(std::make_pair("cdr", std::vector<uint8_t>(HELLO_WORLD_CDR,
+                                                             std::end(HELLO_WORLD_CDR)))));
+
+INSTANTIATE_TEST_SUITE_P(
+  TestPublishingJSON, PublisherTest,
+  testing::Values(std::make_pair("json", std::vector<uint8_t>(HELLO_WORLD_JSON,
+                                                              std::end(HELLO_WORLD_JSON)))));
+
+TEST_P(ExistingPublisherTest, testPublishingWithExistingPublisher) {
+  const auto& [encoding, message] = GetParam();
+
   foxglove::ClientAdvertisement advertisement;
   advertisement.channelId = 1;
   advertisement.topic = TOPIC_NAME;
-  advertisement.encoding = "cdr";
-  advertisement.schemaName = "std_msgs/String";
+  advertisement.encoding = encoding;
+  advertisement.schemaName = "std_msgs/msg/String";
+  advertisement.schema = {};  // Schema intentionally left empty.
 
   // Set up a ROS node with a subscriber
   std::promise<std::string> msgPromise;
@@ -316,7 +339,7 @@ TEST_F(ExistingPublisherTest, testPublishingWithExistingPublisher) {
   ASSERT_EQ(std::future_status::ready, channelFuture.wait_for(ONE_SECOND));
 
   // Publish the message and unadvertise again
-  client->publish(advertisement.channelId, HELLO_WORLD_BINARY, sizeof(HELLO_WORLD_BINARY));
+  client->publish(advertisement.channelId, message.data(), message.size());
   client->unadvertise({advertisement.channelId});
 
   // Ensure that we have received the correct message via our ROS subscriber
@@ -324,6 +347,16 @@ TEST_F(ExistingPublisherTest, testPublishingWithExistingPublisher) {
   ASSERT_EQ(rclcpp::FutureReturnCode::SUCCESS, ret);
   EXPECT_EQ("hello world", msgFuture.get());
 }
+
+INSTANTIATE_TEST_SUITE_P(
+  ExistingPublisherTestCDR, ExistingPublisherTest,
+  testing::Values(std::make_pair("cdr", std::vector<uint8_t>(HELLO_WORLD_CDR,
+                                                             std::end(HELLO_WORLD_CDR)))));
+
+INSTANTIATE_TEST_SUITE_P(
+  ExistingPublisherTestJSON, ExistingPublisherTest,
+  testing::Values(std::make_pair("json", std::vector<uint8_t>(HELLO_WORLD_JSON,
+                                                              std::end(HELLO_WORLD_JSON)))));
 
 TEST_F(ParameterTest, testGetAllParams) {
   const std::string requestId = "req-testGetAllParams";
@@ -732,34 +765,23 @@ int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);
   rclcpp::init(argc, argv);
 
-  const size_t numThreads = 2;
-  auto executor =
-    rclcpp::executors::MultiThreadedExecutor::make_shared(rclcpp::ExecutorOptions{}, numThreads);
-
-  rclcpp_components::ComponentManager componentManager(executor, "ComponentManager");
-  const auto componentResources = componentManager.get_component_resources("foxglove_bridge");
-
-  if (componentResources.empty()) {
-    RCLCPP_INFO(componentManager.get_logger(), "No loadable resources found");
-    return EXIT_FAILURE;
-  }
-
-  auto componentFactory = componentManager.create_component_factory(componentResources.front());
+  rclcpp::executors::SingleThreadedExecutor executor;
   rclcpp::NodeOptions nodeOptions;
   // Explicitly allow file:// asset URIs for testing purposes.
   nodeOptions.append_parameter_override("asset_uri_allowlist",
                                         std::vector<std::string>({"file://.*"}));
-  auto node = componentFactory->create_node_instance(nodeOptions);
-  executor->add_node(node.get_node_base_interface());
+  foxglove_bridge::FoxgloveBridge node(nodeOptions);
+  executor.add_node(node.get_node_base_interface());
 
   std::thread spinnerThread([&executor]() {
-    executor->spin();
+    executor.spin();
   });
 
   const auto testResult = RUN_ALL_TESTS();
-  executor->cancel();
+
+  executor.cancel();
   spinnerThread.join();
-  rclcpp::shutdown();
+  executor.remove_node(node.get_node_base_interface());
 
   return testResult;
 }
