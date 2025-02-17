@@ -1,4 +1,4 @@
-From 91c957b5cd31486227f4cc1e2f846954dc7491cb Mon Sep 17 00:00:00 2001
+From 521ce06fe02e9c09df7b7e2cdbe724987cfdcc8a Mon Sep 17 00:00:00 2001
 From: Zheng Junjie <zhengjunjie@iscas.ac.cn>
 Date: Tue, 28 May 2024 15:21:40 +0800
 Subject: [PATCH] use -O0.
@@ -21,5 +21,5 @@ index a856369..3a114ff 100755
  	BUILD_TESTING_ARG=-DBUILD_TESTING=OFF
  endif
 -- 
-2.46.0
+2.47.1
 
