@@ -1,3 +1,26 @@
+## foxglove_bridge (jazzy) - 0.8.5-1
+
+The packages in the `foxglove_bridge` repository were released into the `jazzy` distro by running `/root/venv/bin/bloom-release -r jazzy foxglove_bridge --override-release-repository-push-url git@github.com:revyos-ros/foxglove_bridge-release.git` on `Mon, 23 Jun 2025 06:10:40 -0000`
+
+The `foxglove_bridge` package was released.
+
+Version of package(s) in repository `foxglove_bridge`:
+
+- upstream repository: https://github.com/foxglove/ros-foxglove-bridge.git
+- release repository: https://github.com/revyos-ros/foxglove_bridge-release.git
+- rosdistro version: `0.8.5-1`
+- old version: `0.8.4-1`
+- new version: `0.8.5-1`
+
+Versions of tools used:
+
+- bloom version: `0.12.0`
+- catkin_pkg version: `1.0.0`
+- rosdep version: `0.25.1`
+- rosdistro version: `1.0.1`
+- vcstools version: `0.1.42`
+
+
 ## foxglove_bridge (humble) - 0.8.5-1
 
 The packages in the `foxglove_bridge` repository were released into the `humble` distro by running `/home/z572/gits/revyos-ros/venv/bin/bloom-release -r humble foxglove_bridge --override-release-repository-push-url git@github.com:revyos-ros/foxglove_bridge-release.git` on `Tue, 17 Jun 2025 05:02:30 -0000`
